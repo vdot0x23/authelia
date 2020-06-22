@@ -405,6 +405,8 @@ notifier:
     trusted_cert: ""
     disable_require_tls: false
     disable_verify_cert: false
+    # Path to secret key which will be used for signing outgoing email
+    secret_signing_key: ""
 
   # Sending an email using a Gmail account is as simple as the next section.
   # You need to create an app password by following: https://support.google.com/accounts/answer/185833?hl=en

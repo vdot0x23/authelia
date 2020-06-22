@@ -84,7 +84,11 @@ func startServer() {
 
 	switch {
 	case config.Notifier.SMTP != nil:
-		notifier = notification.NewSMTPNotifier(*config.Notifier.SMTP)
+		var err error
+		notifier, err = notification.NewSMTPNotifier(*config.Notifier.SMTP)
+		if err != nil {
+			log.Fatalf("Error creating notifier: %s", err)
+		}
 	case config.Notifier.FileSystem != nil:
 		notifier = notification.NewFileNotifier(*config.Notifier.FileSystem)
 	default:

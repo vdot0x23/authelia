@@ -72,6 +72,7 @@ var validKeys = []string{
 	"notifier.smtp.disable_require_tls",
 	"notifier.smtp.disable_verify_cert",
 	"notifier.smtp.trusted_cert",
+	"notifier.smtp.secret_signing_key",
 
 	// Regulation Keys.
 	"regulation.max_retries",

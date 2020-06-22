@@ -5,11 +5,18 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"net/mail"
 	"net/smtp"
+	"os"
 	"strings"
 
+	msgmail "github.com/emersion/go-message/mail"
+	"github.com/emersion/go-pgpmail"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/crypto/openpgp"
+	"golang.org/x/crypto/openpgp/packet"
 
 	"github.com/authelia/authelia/internal/configuration/schema"
 	"github.com/authelia/authelia/internal/utils"
@@ -30,10 +37,31 @@ type SMTPNotifier struct {
 	startupCheckAddress string
 	client              *smtp.Client
 	tlsConfig           *tls.Config
+	secretSigningKey    *openpgp.Entity
+}
+
+func loadKeyfile(path string) (*openpgp.Entity, error) {
+	if path == "" {
+		log.Info("No secret signing key provided, so emails will not be signed")
+		return nil, nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	entity, err := openpgp.ReadEntity(packet.NewReader(f))
+	if err != nil {
+		return nil, err
+	}
+
+	return entity, nil
 }
 
 // NewSMTPNotifier creates a SMTPNotifier using the notifier configuration.
-func NewSMTPNotifier(configuration schema.SMTPNotifierConfiguration) *SMTPNotifier {
+func NewSMTPNotifier(configuration schema.SMTPNotifierConfiguration) (*SMTPNotifier, error) {
+
 	notifier := &SMTPNotifier{
 		username:            configuration.Username,
 		password:            configuration.Password,
@@ -47,9 +75,14 @@ func NewSMTPNotifier(configuration schema.SMTPNotifierConfiguration) *SMTPNotifi
 		subject:             configuration.Subject,
 		startupCheckAddress: configuration.StartupCheckAddress,
 	}
+	var err error
+	notifier.secretSigningKey, err = loadKeyfile(configuration.SecretSigningKey)
+	if err != nil {
+		return nil, err
+	}
 	notifier.initializeTLSConfig()
 
-	return notifier
+	return notifier, nil
 }
 
 func (n *SMTPNotifier) initializeTLSConfig() {
@@ -189,16 +222,59 @@ func (n *SMTPNotifier) compose(recipient, subject, body string) error {
 		return err
 	}
 
-	msg := "From: " + n.sender + "\n" +
-		"To: " + recipient + "\n" +
-		"Subject: " + subject + "\n" +
-		"MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n" +
-		body
+	if n.secretSigningKey == nil {
+		msg := "From: " + n.sender + "\n" +
+			"To: " + recipient + "\n" +
+			"Subject: " + subject + "\n" +
+			"MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n" +
+			body
+		_, err = fmt.Fprint(wc, msg)
+		if err != nil {
+			log.Debugf("Notifier SMTP client error while sending email body over WriteCloser: %s", err)
+			return err
+		}
+	} else {
+		from, err := mail.ParseAddress(n.sender)
+		if err != nil {
+			return err
+		}
 
-	_, err = fmt.Fprint(wc, msg)
-	if err != nil {
-		log.Debugf("Notifier SMTP client error while sending email body over WriteCloser: %s", err)
-		return err
+		to, err := mail.ParseAddress(recipient)
+		if err != nil {
+			return err
+		}
+
+		var header msgmail.Header
+		header.SetAddressList("From", []*msgmail.Address{{from.Name, from.Address}})
+		header.SetAddressList("To", []*msgmail.Address{{to.Name, to.Address}})
+		header.SetSubject(subject)
+
+		var signer *openpgp.Entity
+		signer = n.secretSigningKey
+		var signedHeader msgmail.Header
+		signedHeader.SetContentType("text/html", map[string]string{"charset": "utf-8"})
+
+		wcSigned, err := pgpmail.Sign(wc, header.Header.Header, signedHeader.Header.Header, signer, nil)
+		if err != nil {
+			return err
+		}
+
+		msg, err := msgmail.CreateSingleInlineWriter(wcSigned, signedHeader)
+		if err != nil {
+			return err
+		}
+
+		if _, err := io.WriteString(wcSigned, body); err != nil {
+			return err
+		}
+
+		if err := msg.Close(); err != nil {
+			return err
+		}
+
+		if err := wcSigned.Close(); err != nil {
+			return err
+		}
 	}
 
 	err = wc.Close()
