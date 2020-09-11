@@ -72,6 +72,7 @@ var validKeys = []string{
 	"notifier.smtp.disable_require_tls",
 	"notifier.smtp.disable_verify_cert",
 	"notifier.smtp.trusted_cert",
+	"notifier.smtp.disable_html_emails",
 
 	// Regulation Keys.
 	"regulation.max_retries",
@@ -98,6 +99,7 @@ var validKeys = []string{
 	"authentication_backend.ldap.groups_filter",
 	"authentication_backend.ldap.group_name_attribute",
 	"authentication_backend.ldap.mail_attribute",
+	"authentication_backend.ldap.display_name_attribute",
 	"authentication_backend.ldap.user",
 	"authentication_backend.ldap.password",
 

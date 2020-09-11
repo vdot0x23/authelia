@@ -12,7 +12,7 @@ RUN yarn install --frozen-lockfile && INLINE_RUNTIME_CHUNK=false yarn build
 # =======================================
 # ===== Build image for the backend =====
 # =======================================
-FROM golang:1.14.4-alpine AS builder-backend
+FROM golang:1.15.2-alpine AS builder-backend
 
 ARG BUILD_TAG
 ARG BUILD_COMMIT
@@ -47,7 +47,7 @@ RUN echo "Write tag ${BUILD_TAG} and commit ${BUILD_COMMIT} in binary." && \
 
 # CGO_ENABLED=1 is mandatory for building go-sqlite3
 RUN cd cmd/authelia && \
-GOOS=linux GOARCH=arm CGO_ENABLED=1 CC=arm-linux-musleabihf-gcc go build -tags netgo -ldflags '-w -linkmode external -extldflags -static' -trimpath -o authelia
+GOOS=linux GOARCH=arm CGO_ENABLED=1 CC=arm-linux-musleabihf-gcc go build -tags netgo -ldflags '-s -w -linkmode external -extldflags -static' -trimpath -o authelia
 
 # ===================================
 # ===== Authelia official image =====

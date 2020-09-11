@@ -1,8 +1,9 @@
 package server
 
 import (
-	"fmt"
+	"net"
 	"os"
+	"strconv"
 
 	duoapi "github.com/duosecurity/duo_api_golang"
 	"github.com/fasthttp/router"
@@ -22,10 +23,15 @@ import (
 func StartServer(configuration schema.Configuration, providers middlewares.Providers) {
 	autheliaMiddleware := middlewares.AutheliaMiddleware(configuration, providers)
 	embeddedAssets := "/public_html"
+	rememberMe := strconv.FormatBool(configuration.Session.RememberMeDuration != "0")
+	resetPassword := strconv.FormatBool(!configuration.AuthenticationBackend.DisableResetPassword)
+
 	rootFiles := []string{"favicon.ico", "manifest.json", "robots.txt"}
 
+	serveIndexHandler := ServeIndex(embeddedAssets, configuration.Server.Path, rememberMe, resetPassword)
+
 	r := router.New()
-	r.GET("/", ServeIndex(embeddedAssets, configuration.Server.Path))
+	r.GET("/", serveIndexHandler)
 
 	for _, f := range rootFiles {
 		r.GET("/"+f, fasthttpadaptor.NewFastHTTPHandler(br.Serve(embeddedAssets)))
@@ -35,9 +41,8 @@ func StartServer(configuration schema.Configuration, providers middlewares.Provi
 
 	r.GET("/api/state", autheliaMiddleware(handlers.StateGet))
 
-	r.GET("/api/configuration", autheliaMiddleware(handlers.ConfigurationGet))
-	r.GET("/api/configuration/extended", autheliaMiddleware(
-		middlewares.RequireFirstFactor(handlers.ExtendedConfigurationGet)))
+	r.GET("/api/configuration", autheliaMiddleware(
+		middlewares.RequireFirstFactor(handlers.ConfigurationGet)))
 
 	r.GET("/api/verify", autheliaMiddleware(handlers.VerifyGet(configuration.AuthenticationBackend)))
 	r.HEAD("/api/verify", autheliaMiddleware(handlers.VerifyGet(configuration.AuthenticationBackend)))
@@ -113,7 +118,7 @@ func StartServer(configuration schema.Configuration, providers middlewares.Provi
 		r.GET("/debug/vars", expvarhandler.ExpvarHandler)
 	}
 
-	r.NotFound = ServeIndex(embeddedAssets, configuration.Server.Path)
+	r.NotFound = serveIndexHandler
 
 	handler := middlewares.LogRequestMiddleware(r.Handler)
 	if configuration.Server.Path != "" {
@@ -128,13 +133,18 @@ func StartServer(configuration schema.Configuration, providers middlewares.Provi
 		WriteBufferSize:       configuration.Server.WriteBufferSize,
 	}
 
-	addrPattern := fmt.Sprintf("%s:%d", configuration.Host, configuration.Port)
+	addrPattern := net.JoinHostPort(configuration.Host, strconv.Itoa(configuration.Port))
+
+	listener, err := net.Listen("tcp", addrPattern)
+	if err != nil {
+		logging.Logger().Fatalf("Error initializing listener: %s", err)
+	}
 
 	if configuration.TLSCert != "" && configuration.TLSKey != "" {
 		logging.Logger().Infof("Authelia is listening for TLS connections on %s%s", addrPattern, configuration.Server.Path)
-		logging.Logger().Fatal(server.ListenAndServeTLS(addrPattern, configuration.TLSCert, configuration.TLSKey))
+		logging.Logger().Fatal(server.ServeTLS(listener, configuration.TLSCert, configuration.TLSKey))
 	} else {
 		logging.Logger().Infof("Authelia is listening for non-TLS connections on %s%s", addrPattern, configuration.Server.Path)
-		logging.Logger().Fatal(server.ListenAndServe(addrPattern))
+		logging.Logger().Fatal(server.Serve(listener))
 	}
 }
