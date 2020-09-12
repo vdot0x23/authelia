@@ -78,3 +78,4 @@ notifier:
     port: 1025
     sender: admin@example.com
     disable_require_tls: true
+    secret_signing_key: internal/suites/example/compose/authelia/resources/mock-signing-key.pgp

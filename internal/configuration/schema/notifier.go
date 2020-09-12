@@ -14,6 +14,7 @@ type SMTPNotifierConfiguration struct {
 	Sender              string `mapstructure:"sender"`
 	Subject             string `mapstructure:"subject"`
 	TrustedCert         string `mapstructure:"trusted_cert"`
+	SecretSigningKey    string `mapstructure:"secret_signing_key"`
 	StartupCheckAddress string `mapstructure:"startup_check_address"`
 	DisableVerifyCert   bool   `mapstructure:"disable_verify_cert"`
 	DisableRequireTLS   bool   `mapstructure:"disable_require_tls"`

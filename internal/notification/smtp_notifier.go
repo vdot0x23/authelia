@@ -6,12 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	//"net/mail"
 	"net/smtp"
 	"strings"
 	"time"
+	"os"
 
+	_ "github.com/emersion/go-message/charset"
+	//"github.com/emersion/go-message"
+	//msgmail "github.com/emersion/go-message/mail"
 	log "github.com/sirupsen/logrus"
 
+	"golang.org/x/crypto/openpgp"
+	"golang.org/x/crypto/openpgp/packet"
+	//"github.com/emersion/go-pgpmail"
 	"github.com/authelia/authelia/internal/configuration/schema"
 	"github.com/authelia/authelia/internal/utils"
 )
@@ -31,10 +39,12 @@ type SMTPNotifier struct {
 	startupCheckAddress string
 	client              *smtp.Client
 	tlsConfig           *tls.Config
+	secretSigningKey    *openpgp.Entity
 }
 
+
 // NewSMTPNotifier creates a SMTPNotifier using the notifier configuration.
-func NewSMTPNotifier(configuration schema.SMTPNotifierConfiguration) *SMTPNotifier {
+func NewSMTPNotifier(configuration schema.SMTPNotifierConfiguration) (*SMTPNotifier, error) {
 	notifier := &SMTPNotifier{
 		username:            configuration.Username,
 		password:            configuration.Password,
@@ -48,9 +58,33 @@ func NewSMTPNotifier(configuration schema.SMTPNotifierConfiguration) *SMTPNotifi
 		subject:             configuration.Subject,
 		startupCheckAddress: configuration.StartupCheckAddress,
 	}
+
+	loadKeyfile := func(path string) (*openpgp.Entity, error) {
+		if path == "" {
+			log.Debug("No secret signing key provided, so emails will not be signed")
+			return nil, nil
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+
+		entity, err := openpgp.ReadEntity(packet.NewReader(f))
+		if err != nil {
+			return nil, err
+		}
+		return entity, nil
+	}
+
+	var err error
+	notifier.secretSigningKey, err = loadKeyfile(configuration.SecretSigningKey)
+	if err != nil {
+		return nil, err
+	}
 	notifier.initializeTLSConfig()
 
-	return notifier
+	return notifier, nil
 }
 
 func (n *SMTPNotifier) initializeTLSConfig() {
@@ -189,35 +223,136 @@ func (n *SMTPNotifier) compose(recipient, subject, body, htmlBody string) error 
 		log.Debugf("Notifier SMTP client error while obtaining WriteCloser: %s", err)
 		return err
 	}
+	if n.secretSigningKey == nil {
+		boundary := utils.RandomString(30, utils.AlphaNumericCharacters)
 
-	boundary := utils.RandomString(30, utils.AlphaNumericCharacters)
+		now := time.Now()
 
-	now := time.Now()
+		msg := "Date:" + now.Format(rfc5322DateTimeLayout) + "\r\n" +
+			"From: " + n.sender + "\r\n" +
+			"To: " + recipient + "\r\n" +
+			"Subject: " + subject + "\r\n" +
+			"MIME-version: 1.0\r\n" +
+			"Content-Type: multipart/alternative; boundary=" + boundary + "\r\n\n" +
+			"--" + boundary + "\r\n" +
+			"Content-Type: text/plain; charset=\"UTF-8\"\r\n" +
+			"Content-Transfer-Encoding: quoted-printable\r\n" +
+			"Content-Disposition: inline\r\n\n" +
+			body + "\r\n"
 
-	msg := "Date:" + now.Format(rfc5322DateTimeLayout) + "\n" +
-		"From: " + n.sender + "\n" +
-		"To: " + recipient + "\n" +
-		"Subject: " + subject + "\n" +
-		"MIME-version: 1.0\n" +
-		"Content-Type: multipart/alternative; boundary=" + boundary + "\n\n" +
-		"--" + boundary + "\n" +
-		"Content-Type: text/plain; charset=\"UTF-8\"\n" +
-		"Content-Transfer-Encoding: quoted-printable\n" +
-		"Content-Disposition: inline\n\n" +
-		body + "\n"
+		if htmlBody != "" {
+			msg += "--" + boundary + "\r\n" +
+				"Content-Type: text/html; charset=\"UTF-8\"\r\n\n" +
+				htmlBody + "\r\n"
+		}
 
-	if htmlBody != "" {
-		msg += "--" + boundary + "\n" +
-			"Content-Type: text/html; charset=\"UTF-8\"\n\n" +
-			htmlBody + "\n"
-	}
+		msg += "--" + boundary + "--" + "\r\n"
 
-	msg += "--" + boundary + "--"
+		_, err = fmt.Fprint(wc, msg)
+		if err != nil {
+			log.Debugf("Notifier SMTP client error while sending email body over WriteCloser: %s", err)
+			return err
+		}
+	} else {
+		outerBoundary := utils.RandomString(30, utils.AlphaNumericCharacters)
+		boundary := utils.RandomString(30, utils.AlphaNumericCharacters)
 
-	_, err = fmt.Fprint(wc, msg)
-	if err != nil {
-		log.Debugf("Notifier SMTP client error while sending email body over WriteCloser: %s", err)
-		return err
+		now := time.Now()
+
+		pre := "Date:" + now.Format(rfc5322DateTimeLayout) + "\r\n" +
+			"From: " + n.sender + "\r\n" +
+			"To: " + recipient + "\r\n" +
+			"Subject: " + subject + "\r\n" +
+			"MIME-version: 1.0\r\n" +
+			"Content-Type: multipart/signed; micalg=pgp-sha256; protocol=\"application/pgp\"; boundary=" + outerBoundary + "\r\n\r\n" +
+			"--" + outerBoundary + "\r\n"
+
+		msg :="Content-Type: multipart/alternative; boundary=" + boundary + "\r\n" +
+			"Content-Transfer-Encoding: 7bit" + "\r\n\r\n" +
+			"--" + boundary + "\r\n" +
+			"Content-Type: text/plain; charset=\"UTF-8\"\r\n" +
+			"Content-Transfer-Encoding: quoted-printable\r\n" +
+			"Content-Disposition: inline\r\n\r\n" +
+			body + "\r\n"
+
+		if htmlBody != "" {
+			msg += "--" + boundary + "\r\n" +
+				"Content-Type: text/html; charset=\"UTF-8\"\r\n\r\n" +
+				htmlBody + "\r\n"
+		}
+		msg += "--" + boundary + "--" + "\r\n"
+
+		var sig strings.Builder
+		err := openpgp.ArmoredDetachSignText(&sig, n.secretSigningKey, strings.NewReader(msg), nil)
+		if err != nil {
+			return err
+		}
+		signed := pre + msg
+		signed += "--" + outerBoundary + "\r\n" +
+			"Content-Type: application/pgp-signature; name=\"signature.asc\"" + "\r\n" +
+			"Content-Disposition: attachment; filename=\"signature.asc\"" + "\r\n" +
+			"Content-Description: OpenPGP digital signature" + "\r\n\r\n"
+		signed += sig.String() + "\r\n\r\n" + "--" + outerBoundary + "--"
+
+		_, err = fmt.Fprint(wc, signed)
+		if err != nil {
+			log.Debugf("Notifier SMTP client error while sending email body over WriteCloser: %s", err)
+			return err
+		}
+
+		/*
+		from, err := mail.ParseAddress(n.sender)
+		if err != nil {
+			return err
+		}
+
+		to, err := mail.ParseAddress(recipient)
+		if err != nil {
+			return err
+		}
+
+		var htmlHeader msgmail.Header
+		htmlHeader.SetContentType("text/html", nil)
+		html, err := message.New(htmlHeader.Header, strings.NewReader(htmlBody))
+		if err != nil {
+			return err
+		}
+
+		var plainHeader msgmail.Header
+		plainHeader.SetContentType("text/plain", nil)
+		plain, err := message.New(plainHeader.Header, strings.NewReader(body))
+		if err != nil {
+			return err
+		}
+
+		var rootHeader msgmail.Header
+		rootHeader.SetAddressList("From", []*msgmail.Address{{from.Name, from.Address}})
+		rootHeader.SetAddressList("To", []*msgmail.Address{{to.Name, to.Address}})
+
+		var msg *strings.Builder
+		html.WriteTo(msg)
+		plain.WriteTo(msg)
+
+		//msg, err := message.NewMultipart(rootHeader.Header, []*message.Entity{html, plain})
+
+
+		var signedHeader message.Header
+		signedHeader.SetContentType("multipart/signed", nil)
+
+		wcSigned, err := pgpmail.Sign(wc, rootHeader.Header.Header, signedHeader.Header, n.secretSigningKey, nil)
+		if err != nil {
+			return err
+		}
+
+		_, err = fmt.Fprint(wcSigned, msg.String())
+		if err != nil {
+			return err
+		}
+
+		if err := wcSigned.Close(); err != nil {
+			return err
+		}
+		*/
 	}
 
 	err = wc.Close()
